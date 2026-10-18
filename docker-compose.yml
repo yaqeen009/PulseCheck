@@ -1,0 +1,82 @@
+# PulseCheck - local/production stack: PostgreSQL + API/worker + web.
+#
+#   docker compose up --build
+#   docker compose run --rm api migrate     # apply migrations explicitly
+#
+# The API container runs the scheduler and the worker in-process. Because the
+# scheduler is guarded by a PostgreSQL advisory lock (see docs/ARCHITECTURE.md),
+# scaling the `api` service is safe: exactly one replica dispatches checks.
+#
+# NOTE: this compose file was written but NOT executed - no Docker daemon was
+# available in the environment where this project was built. It is provided as
+# a deployment starting point; verify it against your own infrastructure.
+
+name: pulsecheck
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-pulsecheck}
+    # Not published to the host by default: only the API needs the database.
+    expose:
+      - '5432'
+    volumes:
+      - pulsecheck-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-pulsecheck}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  api:
+    build:
+      context: .
+      dockerfile: packages/server/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 4100
+      # Inside the compose network the database is reachable by service name.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-pulsecheck}?schema=public
+      # Required. Generate with: openssl rand -base64 48
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in the environment or a .env file}
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:8080}
+      TRUST_PROXY: 'true'
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
+      REGISTRATION_EMAIL_ALLOWLIST: ${REGISTRATION_EMAIL_ALLOWLIST:-}
+      SCHEDULER_ENABLED: 'true'
+      WORKER_ENABLED: 'true'
+      BLOCK_PRIVATE_NETWORKS: 'true'
+      REQUIRE_HTTPS_TARGETS: ${REQUIRE_HTTPS_TARGETS:-false}
+      RATE_LIMIT_AUTH_MAX: ${RATE_LIMIT_AUTH_MAX:-10}
+      RATE_LIMIT_API_MAX: ${RATE_LIMIT_API_MAX:-300}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_PRETTY: 'false'
+      # Apply migrations on start. With more than one replica, run
+      # `docker compose run --rm api migrate` instead and leave this false.
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
+    expose:
+      - '4100'
+
+  web:
+    build:
+      context: .
+      dockerfile: packages/web/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      # The only service published to the host.
+      - '${WEB_PORT:-8080}:80'
+
+volumes:
+  pulsecheck-db:

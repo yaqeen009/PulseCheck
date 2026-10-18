@@ -1,0 +1,176 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * PulseCheck palette.
+ *
+ * Dark-first: the app ships with `.dark` on <html>. Both themes are defined from
+ * the same token names so a component never hard-codes a colour.
+ *
+ * Status tokens are the only saturated colours in the app: an operator scanning
+ * a dense table should see health before they read a single word.
+ */
+@layer base {
+  :root {
+    --background: 210 24% 98%;
+    --foreground: 222 47% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+
+    --primary: 221 83% 48%;
+    --primary-foreground: 210 40% 98%;
+
+    --secondary: 214 32% 95%;
+    --secondary-foreground: 222 47% 15%;
+
+    --muted: 214 32% 95%;
+    --muted-foreground: 215 17% 42%;
+
+    --accent: 214 32% 94%;
+    --accent-foreground: 222 47% 15%;
+
+    --destructive: 0 72% 45%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 214 26% 88%;
+    --input: 214 26% 86%;
+    --ring: 221 83% 48%;
+
+    --sidebar: 210 26% 96%;
+    --sidebar-foreground: 222 40% 20%;
+    --sidebar-accent: 214 30% 92%;
+    --sidebar-border: 214 26% 88%;
+
+    --status-healthy: 154 64% 32%;
+    --status-healthy-foreground: 0 0% 100%;
+    --status-degraded: 30 92% 40%;
+    --status-degraded-foreground: 0 0% 100%;
+    --status-down: 0 72% 45%;
+    --status-down-foreground: 0 0% 100%;
+    --status-paused: 215 16% 45%;
+    --status-paused-foreground: 0 0% 100%;
+    --status-pending: 217 40% 52%;
+    --status-pending-foreground: 0 0% 100%;
+
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 222 24% 7%;
+    --foreground: 210 22% 96%;
+
+    --card: 222 22% 10%;
+    --card-foreground: 210 22% 96%;
+
+    --popover: 222 24% 11%;
+    --popover-foreground: 210 22% 96%;
+
+    --primary: 217 91% 62%;
+    --primary-foreground: 222 47% 9%;
+
+    --secondary: 217 20% 16%;
+    --secondary-foreground: 210 22% 94%;
+
+    --muted: 217 20% 15%;
+    --muted-foreground: 215 18% 63%;
+
+    --accent: 217 22% 18%;
+    --accent-foreground: 210 22% 96%;
+
+    --destructive: 0 66% 54%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 217 20% 18%;
+    --input: 217 20% 22%;
+    --ring: 217 91% 62%;
+
+    --sidebar: 222 26% 9%;
+    --sidebar-foreground: 214 18% 82%;
+    --sidebar-accent: 217 22% 16%;
+    --sidebar-border: 217 20% 16%;
+
+    --status-healthy: 154 58% 46%;
+    --status-healthy-foreground: 152 60% 8%;
+    --status-degraded: 35 94% 56%;
+    --status-degraded-foreground: 30 80% 10%;
+    --status-down: 0 74% 60%;
+    --status-down-foreground: 0 60% 10%;
+    --status-paused: 215 16% 58%;
+    --status-paused-foreground: 215 30% 10%;
+    --status-pending: 217 40% 66%;
+    --status-pending-foreground: 217 45% 12%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  html:not(.dark) {
+    color-scheme: light;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: 'cv11', 'ss01';
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Keyboard guidance stays visible everywhere; mouse users never see a ring. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+
+  ::selection {
+    @apply bg-primary/30;
+  }
+
+  /* Thin, calm scrollbars: this is a data-dense tool, not a landing page. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--border));
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer utilities {
+  /* Numbers in tables and stat cards must not shift width as they change. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}

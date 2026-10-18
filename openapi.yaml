@@ -1,0 +1,753 @@
+openapi: 3.1.0
+info:
+  title: PulseCheck API
+  version: 0.1.0
+  description: |
+    HTTP API for PulseCheck, an API monitoring platform.
+
+    ## Authentication
+    Send the bearer JWT that Neon Auth (Managed Better Auth) issues for the
+    current browser session: `Authorization: Bearer <jwt>`. The SPA obtains the
+    token directly from Neon Auth; this API never sees a password. The JWT is
+    EdDSA (Ed25519), valid 15 minutes, and is verified against Neon Auth's JWKS.
+
+    ## CSRF
+    Not applicable. The API uses bearer tokens, and a browser never attaches an
+    `Authorization` header automatically, so no ambient credential exists for a
+    cross-site request to reuse.
+
+    ## Errors
+    Every failed request returns the same envelope:
+    `{ "error": { "code": "...", "message": "...", "details"?, "requestId"? } }`.
+
+    ## Honesty rules
+    Statistics that have no data are `null` (never `0`). A monitor with no
+    completed checks reports `uptimePercent: null` and status `PENDING`.
+  license:
+    name: MIT
+servers:
+  - url: http://localhost:4100
+    description: Local development server
+
+tags:
+  - name: Auth
+  - name: Monitors
+  - name: History
+  - name: Incidents
+  - name: Dashboard
+  - name: Meta
+  - name: Health
+
+security:
+  - bearerAuth: []
+
+paths:
+  /health/live:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      description: Reports that the process is running. Touches nothing outside the process.
+      security: []
+      responses:
+        '200':
+          description: Process is alive
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+  /health/ready:
+    get:
+      tags: [Health]
+      summary: Readiness probe
+      description: Checks PostgreSQL. Returns 503 while the database is unreachable.
+      security: []
+      responses:
+        '200':
+          description: Ready to serve traffic
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+        '503':
+          description: A dependency is unavailable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+
+  /api/v1/auth/me:
+    get:
+      tags: [Auth]
+      summary: Current user
+      description: The local projection of the authenticated Neon Auth identity.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The authenticated user
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /api/v1/monitors:
+    get:
+      tags: [Monitors]
+      summary: List monitors
+      parameters:
+        - name: search
+          in: query
+          schema: { type: string, maxLength: 100 }
+          description: Case-insensitive match on name or URL
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [PENDING, HEALTHY, DEGRADED, DOWN, PAUSED, ALL]
+            default: ALL
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [name, status, lastCheckedAt, createdAt]
+            default: createdAt
+        - name: order
+          in: query
+          schema: { type: string, enum: [asc, desc], default: desc }
+      responses:
+        '200':
+          description: The caller's monitors
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Monitor' }
+        '401': { description: Authentication required }
+    post:
+      tags: [Monitors]
+      summary: Create a monitor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MonitorCreate' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  monitor: { $ref: '#/components/schemas/Monitor' }
+        '400':
+          description: Invalid configuration
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '409':
+          description: Monitor limit reached (`LIMIT_EXCEEDED`)
+
+  /api/v1/monitors/meta/methods:
+    get:
+      tags: [Monitors]
+      summary: Supported HTTP methods
+      responses:
+        '200':
+          description: Methods accepted in a monitor's `method` field
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  methods:
+                    type: array
+                    items: { type: string, enum: [GET, POST, PUT, PATCH, DELETE] }
+
+  /api/v1/monitors/{id}:
+    parameters:
+      - $ref: '#/components/parameters/MonitorId'
+    get:
+      tags: [Monitors]
+      summary: Get one monitor
+      responses:
+        '200':
+          description: The monitor
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  monitor: { $ref: '#/components/schemas/Monitor' }
+        '404': { description: Not found, or owned by another account }
+    patch:
+      tags: [Monitors]
+      summary: Update a monitor
+      description: |
+        Partial update. Omitting `body` leaves the stored body untouched;
+        sending `null` clears it. Re-enabling a paused monitor resets it to
+        `PENDING`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MonitorUpdate' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  monitor: { $ref: '#/components/schemas/Monitor' }
+        '400': { description: Invalid patch }
+        '409':
+          description: The merged configuration would be invalid (`CONFLICT`)
+    delete:
+      tags: [Monitors]
+      summary: Delete a monitor
+      description: Also deletes its check history and incidents (cascade).
+      responses:
+        '204': { description: Deleted }
+        '404': { description: Not found }
+
+  /api/v1/monitors/{id}/pause:
+    parameters:
+      - $ref: '#/components/parameters/MonitorId'
+    post:
+      tags: [Monitors]
+      summary: Pause monitoring
+      description: Sets the status to `PAUSED`, stops scheduling and resolves any open incident.
+      responses:
+        '200':
+          description: Paused
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  monitor: { $ref: '#/components/schemas/Monitor' }
+        '404': { description: Not found }
+  /api/v1/monitors/{id}/resume:
+    parameters:
+      - $ref: '#/components/parameters/MonitorId'
+    post:
+      tags: [Monitors]
+      summary: Resume monitoring
+      description: Sets the status back to `PENDING` and schedules a check immediately.
+      responses:
+        '200':
+          description: Resumed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  monitor: { $ref: '#/components/schemas/Monitor' }
+        '404': { description: Not found }
+
+  /api/v1/monitors/{id}/checks:
+    parameters:
+      - $ref: '#/components/parameters/MonitorId'
+    get:
+      tags: [History]
+      summary: Check history
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: success
+          in: query
+          schema: { type: boolean }
+          description: Filter to successful or failed checks
+      responses:
+        '200':
+          description: Newest-first page of check results
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/CheckResult' }
+        '404': { description: Not found }
+  /api/v1/monitors/{id}/uptime:
+    parameters:
+      - $ref: '#/components/parameters/MonitorId'
+    get:
+      tags: [History]
+      summary: Uptime and latency aggregates
+      parameters:
+        - $ref: '#/components/parameters/Window'
+      responses:
+        '200':
+          description: Aggregate statistics for the window
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UptimeResponse' }
+        '404': { description: Not found }
+  /api/v1/monitors/{id}/response-times:
+    parameters:
+      - $ref: '#/components/parameters/MonitorId'
+    get:
+      tags: [History]
+      summary: Response-time series
+      description: Fixed number of buckets per window; empty buckets have `null` metrics and `0` checks.
+      parameters:
+        - $ref: '#/components/parameters/Window'
+      responses:
+        '200':
+          description: Bucketed series
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [monitorId, window, from, to, points]
+                properties:
+                  monitorId: { type: string, format: uuid }
+                  window: { $ref: '#/components/schemas/TimeWindow' }
+                  from: { type: string, format: date-time }
+                  to: { type: string, format: date-time }
+                  points:
+                    type: array
+                    items: { $ref: '#/components/schemas/ResponseTimePoint' }
+        '404': { description: Not found }
+  /api/v1/monitors/{id}/incidents:
+    parameters:
+      - $ref: '#/components/parameters/MonitorId'
+    get:
+      tags: [Incidents]
+      summary: Incidents for one monitor
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/IncidentStatus'
+      responses:
+        '200':
+          description: Incident page
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Incident' }
+        '404': { description: Not found }
+
+  /api/v1/incidents:
+    get:
+      tags: [Incidents]
+      summary: Account-wide incident history
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/IncidentStatus'
+      responses:
+        '200':
+          description: Incident page including the monitor name
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Incident' }
+
+  /api/v1/dashboard/summary:
+    get:
+      tags: [Dashboard]
+      summary: Dashboard summary
+      description: Every number is derived from stored check results.
+      responses:
+        '200':
+          description: Summary for the caller's account
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardSummary' }
+  /api/v1/dashboard/recent-activity:
+    get:
+      tags: [Dashboard]
+      summary: Recent checks and incidents
+      responses:
+        '200':
+          description: Up to 12 recent checks and 6 recent incidents
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardActivity' }
+
+  /api/v1/meta/limits:
+    get:
+      tags: [Meta]
+      summary: Platform metadata
+      description: Limits, defaults and time windows. Public, so the UI can render validation before anyone logs in.
+      security: []
+      responses:
+        '200':
+          description: Platform metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version: { type: string }
+                  limits: { type: object, additionalProperties: true }
+                  defaults: { type: object, additionalProperties: true }
+                  timeWindows: { type: array, items: { $ref: '#/components/schemas/TimeWindow' } }
+                  timeWindowBuckets: { type: object, additionalProperties: { type: integer } }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Bearer JWT issued by Neon Auth (Managed Better Auth) for the current
+        browser session. The API verifies it against Neon Auth's JWKS; the
+        issuer and audience are both the origin of the Auth URL.
+
+  parameters:
+    MonitorId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PageSize:
+      name: pageSize
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    Window:
+      name: window
+      in: query
+      schema: { $ref: '#/components/schemas/TimeWindow' }
+      description: Defaults to `24h`
+    IncidentStatus:
+      name: status
+      in: query
+      schema: { type: string, enum: [open, resolved, all], default: all }
+
+  schemas:
+    TimeWindow:
+      type: string
+      enum: [1h, 24h, 7d, 30d]
+
+    MonitorStatus:
+      type: string
+      enum: [PENDING, HEALTHY, DEGRADED, DOWN, PAUSED]
+
+    ErrorCategory:
+      type: string
+      enum:
+        [
+          DNS,
+          CONNECT,
+          TLS,
+          TIMEOUT,
+          TOO_MANY_REDIRECTS,
+          RESPONSE_TOO_LARGE,
+          BLOCKED_DESTINATION,
+          INVALID_URL,
+          PROTOCOL,
+          UNKNOWN,
+          UNEXPECTED_STATUS,
+        ]
+
+    ApiErrorCode:
+      type: string
+      enum:
+        [
+          VALIDATION_ERROR,
+          UNAUTHENTICATED,
+          FORBIDDEN,
+          NOT_FOUND,
+          CONFLICT,
+          RATE_LIMITED,
+          PAYLOAD_TOO_LARGE,
+          LIMIT_EXCEEDED,
+          INTERNAL_ERROR,
+          SERVICE_UNAVAILABLE,
+        ]
+
+    ApiError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { $ref: '#/components/schemas/ApiErrorCode' }
+            message: { type: string }
+            requestId: { type: string, format: uuid }
+            details:
+              description: 'For `VALIDATION_ERROR`, `{ issues: [{ path, message }] }`'
+              type: object
+              additionalProperties: true
+
+    User:
+      type: object
+      required: [id, email, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The Neon Auth user id, equal to the JWT `sub`
+        email: { type: string, format: email }
+        createdAt: { type: string, format: date-time }
+
+    MonitorCreate:
+      type: object
+      additionalProperties: false
+      required: [name, url]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        url:
+          type: string
+          format: uri
+          maxLength: 2048
+          description: http/https only, no embedded credentials
+        method: { type: string, enum: [GET, POST, PUT, PATCH, DELETE], default: GET }
+        intervalSeconds: { type: integer, minimum: 30, maximum: 86400, default: 60 }
+        timeoutMs: { type: integer, minimum: 1000, maximum: 30000, default: 10000 }
+        expectedStatusMin: { type: integer, minimum: 100, maximum: 599, default: 200 }
+        expectedStatusMax: { type: integer, minimum: 100, maximum: 599, default: 299 }
+        headers:
+          type: object
+          additionalProperties: { type: string }
+          description: Up to 30 headers. Hop-by-hop and engine-managed names are refused.
+        body:
+          type: [string, 'null']
+          maxLength: 16384
+          description: Only for POST/PUT/PATCH/DELETE
+        degradedResponseTimeMs:
+          type: [integer, 'null']
+          minimum: 1
+          maximum: 30000
+          description: A correct response slower than this becomes DEGRADED
+        enabled: { type: boolean, default: true }
+
+    MonitorUpdate:
+      allOf:
+        - $ref: '#/components/schemas/MonitorCreate'
+      description: 'Every field optional; at least one required. `body: null` clears the body.'
+      minProperties: 1
+
+    Monitor:
+      type: object
+      required:
+        [
+          id,
+          userId,
+          name,
+          url,
+          method,
+          intervalSeconds,
+          timeoutMs,
+          expectedStatusMin,
+          expectedStatusMax,
+          headers,
+          enabled,
+          status,
+          nextCheckAt,
+          createdAt,
+          updatedAt,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+        name: { type: string }
+        url: { type: string }
+        method: { type: string, enum: [GET, POST, PUT, PATCH, DELETE] }
+        intervalSeconds: { type: integer }
+        timeoutMs: { type: integer }
+        expectedStatusMin: { type: integer }
+        expectedStatusMax: { type: integer }
+        headers: { type: object, additionalProperties: { type: string } }
+        body: { type: [string, 'null'] }
+        degradedResponseTimeMs: { type: [integer, 'null'] }
+        enabled: { type: boolean }
+        status: { $ref: '#/components/schemas/MonitorStatus' }
+        lastCheckedAt: { type: [string, 'null'], format: date-time }
+        lastStatusChangeAt: { type: [string, 'null'], format: date-time }
+        consecutiveFailures: { type: integer }
+        nextCheckAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    CheckResult:
+      type: object
+      required: [id, monitorId, checkedAt, completedAt, success, responseTimeMs]
+      properties:
+        id: { type: string, format: uuid }
+        monitorId: { type: string, format: uuid }
+        checkedAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time }
+        success: { type: boolean }
+        httpStatusCode:
+          type: [integer, 'null']
+          description: Null when no HTTP response was received
+        responseTimeMs: { type: integer }
+        errorCategory: { oneOf: [{ $ref: '#/components/schemas/ErrorCategory' }, { type: 'null' }] }
+        errorMessage: { type: [string, 'null'], maxLength: 500 }
+
+    Incident:
+      type: object
+      required: [id, monitorId, startedAt, initialStatus, peakStatus, failedCheckCount, ongoing]
+      properties:
+        id: { type: string, format: uuid }
+        monitorId: { type: string, format: uuid }
+        monitorName: { type: string, description: Present on account-wide listings }
+        startedAt: { type: string, format: date-time }
+        resolvedAt: { type: [string, 'null'], format: date-time }
+        initialStatus: { $ref: '#/components/schemas/MonitorStatus' }
+        peakStatus: { $ref: '#/components/schemas/MonitorStatus' }
+        latestErrorSummary: { type: [string, 'null'] }
+        failedCheckCount: { type: integer }
+        durationMs: { type: [integer, 'null'], description: Null while the incident is ongoing }
+        ongoing: { type: boolean }
+
+    UptimeStats:
+      type: object
+      required:
+        [
+          totalChecks,
+          successfulChecks,
+          failedChecks,
+          respondedChecks,
+          uptimePercent,
+          availabilityPercent,
+          avgResponseTimeMs,
+          minResponseTimeMs,
+          maxResponseTimeMs,
+          p95ResponseTimeMs,
+        ]
+      properties:
+        totalChecks: { type: integer }
+        successfulChecks: { type: integer }
+        failedChecks: { type: integer }
+        respondedChecks: { type: integer }
+        uptimePercent:
+          type: [number, 'null']
+          description: Checks that met expectations. Null when there is no data - never 0.
+        availabilityPercent:
+          type: [number, 'null']
+          description: Checks that received any HTTP response
+        avgResponseTimeMs: { type: [integer, 'null'] }
+        minResponseTimeMs: { type: [integer, 'null'] }
+        maxResponseTimeMs: { type: [integer, 'null'] }
+        p95ResponseTimeMs: { type: [integer, 'null'] }
+
+    UptimeResponse:
+      type: object
+      required: [monitorId, window, from, to, stats]
+      properties:
+        monitorId: { type: string, format: uuid }
+        window: { $ref: '#/components/schemas/TimeWindow' }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        stats: { $ref: '#/components/schemas/UptimeStats' }
+
+    ResponseTimePoint:
+      type: object
+      properties:
+        timestamp: { type: string, format: date-time }
+        avgResponseTimeMs: { type: [integer, 'null'] }
+        minResponseTimeMs: { type: [integer, 'null'] }
+        maxResponseTimeMs: { type: [integer, 'null'] }
+        p95ResponseTimeMs: { type: [integer, 'null'] }
+        checks: { type: integer }
+        failures: { type: integer }
+
+    DashboardSummary:
+      type: object
+      properties:
+        monitors:
+          type: object
+          properties:
+            total: { type: integer }
+            healthy: { type: integer }
+            degraded: { type: integer }
+            down: { type: integer }
+            paused: { type: integer }
+            pending: { type: integer }
+        uptime:
+          type: object
+          properties:
+            window: { $ref: '#/components/schemas/TimeWindow' }
+            stats: { $ref: '#/components/schemas/UptimeStats' }
+        openIncidents: { type: integer }
+        incidentsLast24h: { type: integer }
+        checksLast24h:
+          type: object
+          properties:
+            total: { type: integer }
+            failed: { type: integer }
+            successRatePercent: { type: [number, 'null'] }
+        slowestMonitors:
+          type: array
+          items:
+            type: object
+            properties:
+              monitorId: { type: string, format: uuid }
+              name: { type: string }
+              avgResponseTimeMs: { type: integer }
+              uptimePercent: { type: [number, 'null'] }
+              status: { $ref: '#/components/schemas/MonitorStatus' }
+
+    DashboardActivity:
+      type: object
+      properties:
+        recentChecks:
+          type: array
+          items:
+            allOf:
+              - $ref: '#/components/schemas/CheckResult'
+              - type: object
+                properties:
+                  monitorName: { type: string }
+        recentIncidents:
+          type: array
+          items: { $ref: '#/components/schemas/Incident' }
+
+    Page:
+      type: object
+      required: [items, page, pageSize, total, totalPages, hasMore]
+      properties:
+        items: { type: array, items: {} }
+        page: { type: integer }
+        pageSize: { type: integer }
+        total: { type: integer }
+        totalPages: { type: integer }
+        hasMore: { type: boolean }
+
+    Health:
+      type: object
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        uptimeSeconds: { type: integer }
+        version: { type: string }
+        checks:
+          type: object
+          additionalProperties: { type: string, enum: [ok, error] }

@@ -1,0 +1,54 @@
+{
+  "name": "pulsecheck",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PulseCheck - API monitoring platform (monitors, scheduled health checks, uptime analytics)",
+  "workspaces": [
+    "packages/shared",
+    "packages/server",
+    "packages/web"
+  ],
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "dev": "concurrently -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "npm run dev -w @pulsecheck/server",
+    "dev:web": "npm run dev -w @pulsecheck/web",
+    "build": "npm run build -w @pulsecheck/shared && npm run build -w @pulsecheck/server && npm run build -w @pulsecheck/web",
+    "typecheck": "npm run typecheck -w @pulsecheck/shared && npm run typecheck -w @pulsecheck/server && npm run typecheck -w @pulsecheck/web",
+    "lint": "eslint .",
+    "format": "prettier --write \"**/*.{ts,tsx,js,json,md,yml,yaml}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,json,md,yml,yaml}\"",
+    "test": "npm run test -w @pulsecheck/shared && npm run test -w @pulsecheck/server && npm run test -w @pulsecheck/web",
+    "test:e2e": "npm run test:e2e -w @pulsecheck/web",
+    "db:up": "npm run db:up -w @pulsecheck/server",
+    "db:down": "npm run db:down -w @pulsecheck/server",
+    "db:status": "npm run db:status -w @pulsecheck/server",
+    "db:migrate": "npm run db:migrate -w @pulsecheck/server",
+    "db:migrate:deploy": "npm run db:migrate:deploy -w @pulsecheck/server",
+    "db:generate": "npm run db:generate -w @pulsecheck/server",
+    "db:seed": "npm run db:seed -w @pulsecheck/server"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "concurrently": "^9.1.2",
+    "eslint": "^9.39.5",
+    "eslint-config-prettier": "^9.1.0",
+    "globals": "^15.14.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.71.2"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "prisma@7.10.1": true,
+    "@prisma/engines@7.10.1": true,
+    "@embedded-postgres/darwin-arm64@17.10.0-beta.17": true,
+    "fsevents@2.3.3": true
+  },
+  "dependencies": {
+    "@neon/config": "^1.9.2",
+    "@neon/env": "^1.6.3"
+  }
+}

@@ -1,0 +1,170 @@
+// PulseCheck data model.
+//
+// Conventions
+//  - UUID primary keys so ids are safe to expose in URLs.
+//  - `timestamptz(6)` for every instant: checks, incidents and the scheduler all
+//    compare absolute times, so the database must never guess a timezone.
+//  - snake_case table/column names, camelCase in the client.
+//  - Indexes exist for the three hot access paths: the scheduler's due-monitor
+//    scan, a monitor's own time-ordered history, and retention pruning.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum MonitorStatus {
+  PENDING
+  HEALTHY
+  DEGRADED
+  DOWN
+  PAUSED
+}
+
+enum HttpMethod {
+  GET
+  POST
+  PUT
+  PATCH
+  DELETE
+}
+
+enum ErrorCategory {
+  DNS
+  CONNECT
+  TLS
+  TIMEOUT
+  TOO_MANY_REDIRECTS
+  RESPONSE_TOO_LARGE
+  BLOCKED_DESTINATION
+  INVALID_URL
+  PROTOCOL
+  UNKNOWN
+  UNEXPECTED_STATUS
+}
+
+/// Application user.
+///
+/// `id` is the Neon Auth user id (the `sub` claim of the Neon Auth JWT), so the
+/// local row is a projection of the identity owned by Neon Auth (Managed Better
+/// Auth) rather than a credential store. Neon Auth owns passwords, verification
+/// and sessions in the `neon_auth` schema on the same branch; no password or
+/// session material is stored here.
+model User {
+  id        String   @id @db.Uuid
+  email     String   @unique @db.VarChar(254)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  monitors Monitor[]
+
+  @@map("users")
+}
+
+model Monitor {
+  id      String @id @default(uuid()) @db.Uuid
+  userId  String @map("user_id") @db.Uuid
+  name    String @db.VarChar(100)
+  url     String @db.VarChar(2048)
+  method  HttpMethod @default(GET)
+
+  intervalSeconds Int     @default(60) @map("interval_seconds")
+  timeoutMs       Int     @default(10000) @map("timeout_ms")
+
+  /// Inclusive expected status-code range, e.g. 200-299.
+  expectedStatusMin Int @default(200) @map("expected_status_min")
+  expectedStatusMax Int @default(299) @map("expected_status_max")
+
+  /// Custom request headers. Values are never written to logs.
+  headers Json @default("{}")
+  /// Optional request body; only meaningful for POST/PUT/PATCH/DELETE.
+  body    String? @db.Text
+
+  /// Optional latency budget: a successful check slower than this is DEGRADED.
+  degradedResponseTimeMs Int? @map("degraded_response_time_ms")
+
+  enabled Boolean       @default(true)
+  status  MonitorStatus @default(PENDING) @map("current_status")
+
+  lastCheckedAt      DateTime? @map("last_checked_at") @db.Timestamptz(6)
+  lastStatusChangeAt DateTime? @map("last_status_change_at") @db.Timestamptz(6)
+  consecutiveFailures Int      @default(0) @map("consecutive_failures")
+  /// When the scheduler may next run this monitor.
+  nextCheckAt        DateTime  @default(now()) @map("next_check_at") @db.Timestamptz(6)
+
+  /// Lease used to guarantee a single in-flight check per monitor across
+  /// workers. Non-null while a check is running; reclaimed after expiry.
+  leaseToken     String?   @map("lease_token") @db.Char(36)
+  leaseExpiresAt DateTime? @map("lease_expires_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  checkResults CheckResult[]
+  incidents   Incident[]
+
+  /// Scheduler scan: enabled monitors whose next check is due.
+  @@index([enabled, nextCheckAt])
+  /// Per-user monitor list sorting/filtering.
+  @@index([userId, createdAt])
+  @@index([userId, status])
+  @@map("monitors")
+}
+
+model CheckResult {
+  id        String @id @default(uuid()) @db.Uuid
+  monitorId String @map("monitor_id") @db.Uuid
+
+  checkedAt   DateTime @map("checked_at") @db.Timestamptz(6)
+  completedAt DateTime @map("completed_at") @db.Timestamptz(6)
+
+  success        Boolean
+  httpStatusCode Int?     @map("http_status_code")
+  responseTimeMs Int      @map("response_time_ms")
+
+  errorCategory ErrorCategory? @map("error_category")
+  /// Sanitized, bounded diagnostic text. Never contains headers or bodies.
+  errorMessage  String?        @map("error_message") @db.VarChar(500)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  monitor Monitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+
+  /// History: newest first for one monitor.
+  @@index([monitorId, checkedAt(sort: Desc)])
+  /// Retention pruning across every monitor.
+  @@index([checkedAt])
+  @@map("check_results")
+}
+
+model Incident {
+  id        String @id @default(uuid()) @db.Uuid
+  monitorId String @map("monitor_id") @db.Uuid
+
+  startedAt  DateTime  @map("started_at") @db.Timestamptz(6)
+  resolvedAt DateTime? @map("resolved_at") @db.Timestamptz(6)
+
+  /// Status the monitor moved into when the incident opened (DOWN or DEGRADED).
+  initialStatus MonitorStatus @map("initial_status")
+  /// Most severe/latest status observed during the incident.
+  peakStatus    MonitorStatus @map("peak_status")
+
+  latestErrorSummary String? @map("latest_error_summary") @db.VarChar(500)
+  failedCheckCount   Int     @default(1) @map("failed_check_count")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  monitor Monitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+
+  /// At most one open incident per monitor is enforced in code; this index
+  /// makes both the open-incident lookup and history listing cheap.
+  @@index([monitorId, resolvedAt])
+  @@index([monitorId, startedAt(sort: Desc)])
+  @@map("incidents")
+}
