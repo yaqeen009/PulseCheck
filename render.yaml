@@ -1,0 +1,95 @@
+# Render Blueprint for PulseCheck.
+#
+# Provisions everything the app needs except Neon Auth (which stays on Neon):
+#   - pulsecheck-db     Render PostgreSQL (application data)
+#   - pulsecheck-api    web service (Express API, in-process scheduler disabled)
+#   - pulsecheck-worker background worker (the only scheduler in production)
+#
+# Deploy from the Render Dashboard (New > Blueprint) or review the equivalent
+# manual settings in docs/DEPLOYMENT.md. Values marked `sync: false` must be set
+# by you in the Render Dashboard; the blueprint never stores them.
+
+services:
+  # ------------------------------------------------------------------ API ---
+  - type: web
+    name: pulsecheck-api
+    runtime: node
+    # 0.5 CPU / 512 MB keeps the service awake around the clock. Free web
+    # services spin down after 15 idle minutes; the dedicated worker below is
+    # what makes that acceptable for the API, but a paid plan avoids the
+    # one-minute cold start on the first request.
+    plan: 0.5c-512mb
+    buildCommand: npm run build
+    startCommand: node packages/server/dist/index.js
+    healthCheckPath: /health/ready
+    # Runs once per deploy, before the new release goes live, so migrations are
+    # never applied concurrently by several service instances.
+    preDeployCommand: npm run db:migrate:deploy
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: pulsecheck-db
+          property: connectionString
+      # Public origin of the Vercel app — the only origin allowed to call the API.
+      - key: WEB_ORIGIN
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      # The worker owns scheduling in production.
+      - key: SCHEDULER_ENABLED
+        value: 'false'
+      - key: WORKER_ENABLED
+        value: 'true'
+      # Render terminates TLS in front of the service; trust one proxy hop so
+      # express-rate-limit keys on the real client IP.
+      - key: TRUST_PROXY
+        value: 'true'
+      - key: BLOCK_PRIVATE_NETWORKS
+        value: 'true'
+      - key: LOG_PRETTY
+        value: 'false'
+      # Neon Auth (Managed Better Auth) stays on Neon — set these on the service
+      # with the same values as in your local `.env`.
+      - key: NEON_AUTH_BASE_URL
+        sync: false
+      - key: NEON_AUTH_JWKS_URL
+        sync: false
+
+  # --------------------------------------------------------------- worker ---
+  - type: worker
+    name: pulsecheck-worker
+    runtime: node
+    # Background workers have no free tier; the cheapest paid plan is listed.
+    plan: 0.5c-512mb
+    buildCommand: npm run build
+    startCommand: node packages/server/dist/worker.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: pulsecheck-db
+          property: connectionString
+      - key: SCHEDULER_ENABLED
+        value: 'true'
+      - key: WORKER_ENABLED
+        value: 'true'
+      - key: BLOCK_PRIVATE_NETWORKS
+        value: 'true'
+      - key: LOG_PRETTY
+        value: 'false'
+      - key: NEON_AUTH_BASE_URL
+        sync: false
+      - key: NEON_AUTH_JWKS_URL
+        sync: false
+
+databases:
+  # Free Postgres expires 30 days after creation, is capped at 1 GB, allows only
+  # one free instance per workspace and has no backups. Use a paid plan for
+  # production data.
+  - name: pulsecheck-db
+    plan: free
+    databaseName: pulsecheck
+    user: pulsecheck

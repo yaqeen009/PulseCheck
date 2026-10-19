@@ -3,66 +3,40 @@ import { createApp } from './app.js';
 import { disconnectDatabase } from './db.js';
 import { env, isProduction } from './env.js';
 import { logger } from './logger.js';
+import { installShutdownHandlers } from './lifecycle.js';
 import { startMonitoring, type MonitoringHandle } from './monitoring/index.js';
 
 /**
- * Process entry point.
+ * Process entry point (Render web service).
  *
  * Startup order: HTTP listener first (so a probe can see `live` immediately),
  * then the monitoring engine. Shutdown releases the scheduler's advisory lock,
  * stops accepting connections and closes the database pool.
+ *
+ * On Render, run this service with `SCHEDULER_ENABLED=false` and let the
+ * dedicated `pulsecheck-worker` background service dispatch checks instead, so
+ * monitoring survives API redeploys and does not multiply with web instances.
  */
 async function main(): Promise<void> {
   const app = createApp();
   const monitoring: MonitoringHandle = await startMonitoring();
 
-  const server: Server = app.listen(env.PORT, () => {
+  // Express binds every interface when no host is given; naming `0.0.0.0` keeps
+  // the intent explicit for container platforms such as Render.
+  const server: Server = app.listen(env.PORT, '0.0.0.0', () => {
     logger.info(
-      {
-        port: env.PORT,
-        env: env.NODE_ENV,
-        scheduler: monitoring.scheduler !== null,
-      },
+      { port: env.PORT, env: env.NODE_ENV, scheduler: monitoring.scheduler !== null },
       'PulseCheck API listening',
     );
   });
 
-  let shuttingDown = false;
-  const shutdown = async (signal: string): Promise<void> => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    logger.info({ signal }, 'shutting down');
-
-    const forceExit = setTimeout(() => {
-      logger.error('graceful shutdown timed out; forcing exit');
-      process.exit(1);
-    }, 20_000);
-    forceExit.unref();
-
-    try {
-      await new Promise<void>((resolve) => {
+  installShutdownHandlers({
+    stopHttp: () =>
+      new Promise<void>((resolve) => {
         server.close(() => resolve());
-      });
-      await monitoring.stop();
-      await disconnectDatabase();
-      clearTimeout(forceExit);
-      logger.info('shutdown complete');
-      process.exit(0);
-    } catch (error) {
-      logger.error({ err: error }, 'error during shutdown');
-      process.exit(1);
-    }
-  };
-
-  process.on('SIGTERM', () => void shutdown('SIGTERM'));
-  process.on('SIGINT', () => void shutdown('SIGINT'));
-
-  process.on('unhandledRejection', (reason) => {
-    logger.error({ err: reason }, 'unhandled promise rejection');
-  });
-  process.on('uncaughtException', (error) => {
-    logger.fatal({ err: error }, 'uncaught exception');
-    void shutdown('uncaughtException');
+      }),
+    stopMonitoring: () => monitoring.stop(),
+    closeDatabase: () => disconnectDatabase(),
   });
 }
 

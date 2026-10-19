@@ -36,14 +36,19 @@ and `null` uptime (never a fake `0%` or `100%`).
 
 Everything below was executed on this repository in a local (macOS) environment.
 
-| Check                                   | Result                        |
-| --------------------------------------- | ----------------------------- |
-| `npm run format:check`                  | pass (all matched files)      |
-| `npm run lint`                          | pass (no errors, no warnings) |
-| `npm run typecheck`                     | pass (shared, server, web)    |
-| `npm run build`                         | pass (shared, server, web)    |
-| `npm test` (shared + server + web)      | **288 tests passed**          |
-| Playwright smoke (live stack, chromium) | **1 passed**                  |
+| Check                                                                                                           | Result                            |
+| --------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| `npm run format:check`                                                                                          | pass (all matched files)          |
+| `npm run lint`                                                                                                  | pass (no errors, no warnings)     |
+| `npm run typecheck`                                                                                             | pass (shared, server, web)        |
+| `npm run build`                                                                                                 | pass (shared, server, web)        |
+| `npm test` (shared + server + web)                                                                              | **288 tests passed**              |
+| Playwright smoke (live stack, chromium)                                                                         | **1 passed**                      |
+| Production entry points (`dist/index.js`, `dist/worker.js`) started and health-checked against a local database | **pass** (see docs/DEPLOYMENT.md) |
+
+Deployment configuration (`render.yaml`, `vercel.json`, `docs/DEPLOYMENT.md`) is
+written but **not deployed** — the Render and Vercel dashboards require your
+account. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the exact steps.
 
 Live verification against the linked Neon branch (real Neon Auth, real Neon Postgres,
 no mocks): a new account signed up through Neon Auth, `GET /api/v1/auth/me` verified the
@@ -293,6 +298,22 @@ Production configuration notes:
   test environment.
 - The web image builds the SPA and serves it with nginx (`packages/web/nginx.conf`),
   which proxies `/api` and `/health` to the API.
+
+### Render + Vercel (recommended)
+
+The recommended production target is **Render** for the backend and database and
+**Vercel** for the frontend. Full guide: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
+
+- `render.yaml` — Render Blueprint: `pulsecheck-api` (web service),
+  `pulsecheck-worker` (background worker, the only scheduler), `pulsecheck-db`
+  (PostgreSQL). Deploy via **Render Dashboard → New → Blueprint**.
+- `vercel.json` — SPA rewrite so refreshing a nested route does not 404.
+- Vercel build: `npm run build` from the repo root, output `packages/web/dist`.
+
+You must still set in the dashboards: `WEB_ORIGIN` (your Vercel URL) and the Neon
+Auth URLs on both Render services, `VITE_API_BASE_URL` + `VITE_NEON_AUTH_URL` in
+Vercel, add the Vercel origin to Neon Auth's trusted domains, and confirm the
+Render instance plans (free tiers sleep or expire — see the deployment guide).
 
 ---
 

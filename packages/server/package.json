@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "tsx watch --clear-screen=false src/index.ts",
     "start": "node dist/index.js",
+    "worker": "node dist/worker.js",
     "build": "tsc -p tsconfig.build.json",
     "predev": "npm run build --prefix ../shared",
     "prebuild": "npm run build --prefix ../shared && npm run db:generate",

@@ -31,7 +31,7 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().min(1).max(65_535).default(4000),
 
-  WEB_ORIGIN: z.string().trim().default('http://localhost:5173'),
+  WEB_ORIGIN: z.string().trim().default('http://localhost:5273'),
   CORS_ORIGINS: z.string().trim().default(''),
   TRUST_PROXY: booleanish(false),
 
@@ -70,6 +70,8 @@ function parseEnv(): Env {
     const details = result.error.issues
       .map((issue) => `  - ${issue.path.join('.') || '(root)'}: ${issue.message}`)
       .join('\n');
+    // Config errors must read cleanly in platform logs; the stack adds nothing.
+    Error.stackTraceLimit = 0;
     throw new Error(
       `Invalid environment configuration:\n${details}\n\n` +
         'Copy .env.example to .env at the project root and fill in the required values.',
@@ -82,6 +84,27 @@ export const env: Env = parseEnv();
 
 export const isProduction = env.NODE_ENV === 'production';
 export const isTest = env.NODE_ENV === 'test';
+
+/**
+ * Production must never fall back to a localhost CORS origin: that would make a
+ * misconfigured deploy silently reject the real frontend (or, worse, admit a
+ * local process). Localhost origins stay available in development and tests.
+ *
+ * Called by the API entry point (`createApp`), not at module load, because the
+ * monitoring worker imports this module too and has no CORS origin at all.
+ */
+export function assertProductionWebOrigin(): void {
+  if (!isProduction) return;
+  if (!/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(env.WEB_ORIGIN)) return;
+
+  // Config errors must read cleanly in platform logs; the stack adds nothing.
+  Error.stackTraceLimit = 0;
+  throw new Error(
+    'Invalid environment configuration:\n' +
+      '  - WEB_ORIGIN: localhost is not allowed when NODE_ENV=production.\n\n' +
+      'Set WEB_ORIGIN to the deployed frontend origin, e.g. https://pulsecheck.vercel.app.',
+  );
+}
 
 /**
  * Origin of the Neon Auth service (scheme + host, path stripped). Neon Auth

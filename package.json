@@ -16,6 +16,8 @@
     "dev:server": "npm run dev -w @pulsecheck/server",
     "dev:web": "npm run dev -w @pulsecheck/web",
     "build": "npm run build -w @pulsecheck/shared && npm run build -w @pulsecheck/server && npm run build -w @pulsecheck/web",
+    "start": "npm run start -w @pulsecheck/server",
+    "worker": "npm run worker -w @pulsecheck/server",
     "typecheck": "npm run typecheck -w @pulsecheck/shared && npm run typecheck -w @pulsecheck/server && npm run typecheck -w @pulsecheck/web",
     "lint": "eslint .",
     "format": "prettier --write \"**/*.{ts,tsx,js,json,md,yml,yaml}\"",

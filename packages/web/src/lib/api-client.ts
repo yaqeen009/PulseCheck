@@ -7,10 +7,20 @@ import {
 import { authClient } from './auth-client';
 
 /**
+ * Absolute API base for production, empty in development.
+ *
+ * In development the Vite dev server proxies `/api` to the API, so requests
+ * stay same-origin and relative. On Vercel the API is a separate origin on
+ * Render, so `VITE_API_BASE_URL` (e.g. `https://pulsecheck-api.onrender.com`)
+ * makes every request absolute. Vite inlines `VITE_*` at build time.
+ */
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
+
+/**
  * Typed HTTP client for the PulseCheck API.
  *
  * Rules it enforces so no component has to remember them:
- *  - every request goes through the versioned prefix;
+ *  - every request goes through the versioned prefix and the configured API base;
  *  - when a bearer token is available it is attached as `Authorization: Bearer
  *    <jwt>`. The token comes from Neon Auth; this API never sees cookies or CSRF
  *    tokens;
@@ -258,7 +268,7 @@ function toApiError(response: Response, payload: unknown): ApiError {
  */
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const method = options.method ?? 'GET';
-  const url = `${API_PREFIX}${path}${buildQuery(options.query)}`;
+  const url = `${API_BASE_URL}${API_PREFIX}${path}${buildQuery(options.query)}`;
   const body = options.body === undefined ? undefined : JSON.stringify(options.body);
 
   const headers = new Headers({ accept: 'application/json' });

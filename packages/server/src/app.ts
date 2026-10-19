@@ -3,7 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import { pinoHttp } from 'pino-http';
 import { API_PREFIX } from '@pulsecheck/shared';
-import { allowedOrigins, env, isTest } from './env.js';
+import { allowedOrigins, assertProductionWebOrigin, env, isTest } from './env.js';
 import { logger } from './logger.js';
 import { requestIdMiddleware } from './middleware/request-id.js';
 import { asyncHandler, errorHandler, notFoundHandler } from './middleware/error-handler.js';
@@ -34,6 +34,9 @@ export interface CreateAppOptions {
  * ambient cookie credential exists for a cross-site request to abuse.
  */
 export function createApp(options: CreateAppOptions = {}): Express {
+  // Fail fast on a production deploy that still points CORS at localhost.
+  assertProductionWebOrigin();
+
   const app = express();
 
   app.disable('x-powered-by');
@@ -93,6 +96,14 @@ export function createApp(options: CreateAppOptions = {}): Express {
   const api = express.Router();
   api.use(apiLimiter);
   api.use(createAttachAuth(tokenVerifier));
+
+  // API responses carry per-user data and must never be cached by a browser or
+  // an intermediary. `no-store` keeps authenticated responses out of shared
+  // caches and private data out of browser history.
+  api.use((_request, response, next) => {
+    response.setHeader('Cache-Control', 'no-store');
+    next();
+  });
 
   api.use('/auth', authRouter);
   api.use('/monitors', monitorsRouter);
